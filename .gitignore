@@ -37,3 +37,8 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+src/main/resources/application-api.properties
+
+
+

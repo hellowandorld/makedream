@@ -6,8 +6,11 @@ import java.util.*;
 
 /*** 梦境解析核心控制器
  * 此时后端只负责接收文字并调用 AI 逻辑*/
+//处理网络请求
 @RestController
+//接口路径
 @RequestMapping("/api/dream")
+//权限开放
 @CrossOrigin(origins = "*")
 public class DreamController {
 
