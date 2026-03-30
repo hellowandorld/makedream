@@ -1,110 +1,143 @@
 package org.example.controller;
 
+import com.tencentcloudapi.common.Credential;
+import com.tencentcloudapi.aiart.v20221229.AiartClient;
+import com.tencentcloudapi.aiart.v20221229.models.TextToImageRequest;
+import com.tencentcloudapi.aiart.v20221229.models.TextToImageResponse;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.PropertySource;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.http.*;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestTemplate;
-import java.net.InetSocketAddress;
-import java.net.Proxy;
 import java.util.*;
 
 @RestController
 @RequestMapping("/api/dream")
 @CrossOrigin(origins = "*")
+//读取指定API文件
+@PropertySource("classpath:application-api.properties")
 public class DreamController {
 
-    @Value("${google.gemini.api-key:}")
-    private String geminiApiKey;
+    // 读取腾讯云的 SecretId
+    @Value("${tencent.cloud.secret-id}")
+    private String tencentSecretId;
 
-    private final String BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=";
+    // 读取腾讯云的 SecretKey
+    @Value("${tencent.cloud.secret-key}")
+    private String tencentSecretKey;
 
-    // --- 代理配置：如果你在中国大陆使用，必须配置此项 ---
-    private final String PROXY_HOST = "127.0.0.1";
-    private final int PROXY_PORT = 7890; // 这里改成你代理软件的端口(常用 7890, 1080, 10809)
+    // 读取 DeepSeek API Key
+    @Value("${deepseek.api-key}")
+    private String deepseekApiKey;
 
-    private RestTemplate getRestTemplate() {
-        // 创建一个支持代理的请求工厂
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+    private final String DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
-        // 只有当需要访问国外 API 且有代理时才开启
-        Proxy proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress(PROXY_HOST, PROXY_PORT));
-        factory.setProxy(proxy);
-
-        // 设置超时时间，防止无限等待
-        factory.setConnectTimeout(5000);
-        factory.setReadTimeout(15000);
-
-        return new RestTemplate(factory);
-    }
-
-    @GetMapping("/test")
-    public String test() {
-        return "后端运行中。API Key 状态：" + (geminiApiKey.isEmpty() ? "未配置" : "已加载");
-    }
+    //**接口：AI 解梦，接收用户描述，返回解析文本
 
     @PostMapping("/analyze")
     public ResponseEntity<Map<String, Object>> analyzeDream(@RequestBody Map<String, String> request) {
-        String userDream = request.get("content");
+        String content = request.get("content");
         Map<String, Object> response = new HashMap<>();
 
-        if (geminiApiKey == null || geminiApiKey.isEmpty()) {
+        // 安全检查：确保 API Key 已加载
+        if (deepseekApiKey == null || deepseekApiKey.isEmpty() || deepseekApiKey.contains("xxxx")) {
             response.put("success", false);
-            response.put("msg", "服务器未配置 AI 密钥");
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+            response.put("msg", "后端未检测到有效的 DeepSeek 密钥，请检查 application-api.properties");
+            return ResponseEntity.status(500).body(response);
         }
 
         try {
-            String aiResult = callGeminiAI(userDream);
+            System.out.println("====== [开始解梦请求] ======");
+            String aiResult = callDeepSeekAI(content);
+
             response.put("success", true);
+            // 兼容性处理：同时返回下划线和驼峰命名，防止前端读取不到
             response.put("dream_analysis", aiResult);
+            response.put("dreamAnalysis", aiResult);
+
+            System.out.println("解梦完成");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
-            e.printStackTrace(); // 在控制台打印具体的错误详情
+            e.printStackTrace();
             response.put("success", false);
-            response.put("msg", "AI 服务连接超时，请检查后端网络环境");
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+            response.put("msg", "解梦失败: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
         }
     }
 
-    private String callGeminiAI(String dreamText) throws Exception {
-        String fullUrl = BASE_URL + geminiApiKey;
+    //**调用腾讯云混元大模型生成梦境图片（还没成功！！！）
+    @PostMapping("/generate-image")
+    public ResponseEntity<Map<String, Object>> generateDreamImage(@RequestBody Map<String, String> request) {
+        String analysisText = request.get("content");
+        Map<String, Object> response = new HashMap<>();
 
-        // 构造请求体
-        Map<String, Object> payload = new HashMap<>();
+        try {
+            System.out.println("====== [开始生图请求] ======");
+            Credential cred = new Credential(tencentSecretId, tencentSecretKey);
+            AiartClient client = new AiartClient(cred, "ap-guangzhou");
 
-        // 设定 AI 身份
-        Map<String, Object> systemInstruction = new HashMap<>();
-        systemInstruction.put("parts", Collections.singletonList(
-                Collections.singletonMap("text", "你是一位精通心理学的解梦大师，请用温柔且专业的口吻为用户解析梦境，并给出 1 条建议。")
-        ));
-        payload.put("systemInstruction", systemInstruction);
+            TextToImageRequest req = new TextToImageRequest();
 
-        Map<String, Object> userPart = Collections.singletonMap("text", "我的梦境是：" + dreamText);
-        Map<String, Object> content = Collections.singletonMap("parts", Collections.singletonList(userPart));
-        payload.put("contents", Collections.singletonList(content));
+            // 构建 Prompt：加入艺术风格描述
+            String cleanText = analysisText != null ? analysisText.replaceAll("[^\\u4e00-\\u9fa5a-zA-Z0-9]", " ") : "Dream";
+            String prompt = "Surrealism art style, dreamlike scene, soft lighting, " +
+                    (cleanText.length() > 80 ? cleanText.substring(0, 80) : cleanText);
 
+            req.setPrompt(prompt);
+            req.setRspImgType("url");
+            req.setLogoAdd(0L); // 不添加腾讯云 Logo
+
+            TextToImageResponse resp = client.TextToImage(req);
+
+            response.put("success", true);
+            response.put("imageUrl", resp.getResultImage());
+            System.out.println("生图完成: " + resp.getResultImage());
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.put("success", false);
+            response.put("msg", "生图失败: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+
+    //调用 DeepSeek API
+    private String callDeepSeekAI(String dreamText) throws Exception {
+        RestTemplate restTemplate = new RestTemplate();
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(deepseekApiKey);
+
+        List<Map<String, String>> messages = new ArrayList<>();
+
+        // 系统角色设定
+        Map<String, String> systemMsg = new HashMap<>();
+        systemMsg.put("role", "system");
+        systemMsg.put("content", "你是一位精通心理学的解梦大师，擅长结合弗洛伊德与荣格理论解析梦境。请用温暖、治愈且充满哲理的口吻回答。");
+        messages.add(systemMsg);
+
+        // 用户梦境内容
+        Map<String, String> userMsg = new HashMap<>();
+        userMsg.put("role", "user");
+        userMsg.put("content", "我的梦境是：" + dreamText);
+        messages.add(userMsg);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("model", "deepseek-chat");
+        payload.put("messages", messages);
+        payload.put("temperature", 0.7);
+
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(payload, headers);
 
-        // 使用带代理的 RestTemplate 发送请求
-        ResponseEntity<Map> aiResponse = getRestTemplate().postForEntity(fullUrl, entity, Map.class);
+        // 发起请求
+        ResponseEntity<Map> response = restTemplate.postForEntity(DEEPSEEK_URL, entity, Map.class);
 
-        if (aiResponse.getStatusCode() == HttpStatus.OK && aiResponse.getBody() != null) {
-            // 逐层解析 JSON 数据
-            List candidates = (List) aiResponse.getBody().get("candidates");
-            if (candidates != null && !candidates.isEmpty()) {
-                // 1. 获取第一个候选结果 (Map 结构)
-                Map firstCandidate = (Map) candidates.get(0);
-                // 2. 从中提取 "content" 字段 (又是一个 Map 结构)
-                Map contentObj = (Map) firstCandidate.get("content");
-                // 3. 提取 "parts" 列表
-                List<Map> parts = (List<Map>) contentObj.get("parts");
-                // 4. 返回第一段文本内容
-                return (String) parts.get(0).get("text");
-            }
+        if (response.getBody() != null && response.getBody().containsKey("choices")) {
+            List choices = (List) response.getBody().get("choices");
+            Map firstChoice = (Map) choices.get(0);
+            Map messageObj = (Map) firstChoice.get("message");
+            return (String) messageObj.get("content");
         }
-        throw new RuntimeException("API 返回异常");
+        return "梦境过于晦涩难懂，大师暂时无法看透，请稍后再试。";
     }
 }
