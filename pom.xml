@@ -17,7 +17,6 @@
     <!-- 所有的依赖包必须放在这个 dependencies 标签里面 -->
     <dependencies>
         <!-- 1. 腾讯云 SDK (语音识别 ASR) -->
-        <!-- Source: https://mvnrepository.com/artifact/com.tencentcloudapi/tencentcloud-sdk-java -->
         <dependency>
             <groupId>com.tencentcloudapi</groupId>
             <artifactId>tencentcloud-sdk-java</artifactId>

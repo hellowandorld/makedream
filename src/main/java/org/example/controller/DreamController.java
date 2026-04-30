@@ -7,6 +7,8 @@ import com.tencentcloudapi.aiart.v20221229.models.TextToImageRequest;
 import com.tencentcloudapi.aiart.v20221229.models.TextToImageResponse;
 import org.example.mapper.DreamMapper;
 import org.example.entity.DreamRecord;
+import org.example.utils.SensitiveWordEngine;
+import org.example.controller.WeChatSecurityService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.PropertySource;
@@ -24,6 +26,12 @@ public class DreamController {
     @Autowired
     private DreamMapper dreamMapper;
 
+    @Autowired
+    private WeChatSecurityService weChatSecurityService;
+
+    @Autowired
+    private SensitiveWordEngine sensitiveWordEngine;
+
     @Value("${tencent.cloud.secret-id}")
     private String tencentSecretId;
 
@@ -35,88 +43,124 @@ public class DreamController {
 
     private final String DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
-     //1、调用 DeepSeek 模型进行梦境结构化解析
-
+    /**
+     * 1、调用 DeepSeek 模型进行梦境结构化解析
+     */
     @PostMapping("/analyze")
     public ResponseEntity<Map<String, Object>> analyzeDream(@RequestBody Map<String, String> request) {
         String content = request.get("content");
+        String openid = request.get("openid");
         Map<String, Object> response = new HashMap<>();
 
-        if (deepseekApiKey == null || deepseekApiKey.isEmpty() ) {
+        if (content == null || content.trim().length() < 2) {
             response.put("success", false);
-            response.put("msg", "Deepseek 密钥未正确配置");
-            return ResponseEntity.status(500).body(response);
+            response.put("msg", "梦境描述太短啦，再多说一点吧");
+            return ResponseEntity.ok(response);
+        }
+
+        // 本地敏感词检测
+        if (sensitiveWordEngine.containsSensitiveWord(content)) {
+            response.put("success", false);
+            response.put("msg", "内容包含不当词汇，请文明交流。");
+            return ResponseEntity.ok(response);
+        }
+
+        // 微信安全检测
+        if (!weChatSecurityService.checkText(content, openid)) {
+            response.put("success", false);
+            response.put("msg", "内容未通过系统安全评估。");
+            return ResponseEntity.ok(response);
         }
 
         try {
-            System.out.println(">>> 收到解梦请求，正在调用DeepSeek");
+            System.out.println(">>> 正在请求 DeepSeek 解析梦境...");
             String aiResult = callDeepSeekAI(content);
 
-            response.put("success", true);
-            response.put("dreamAnalysis", aiResult); // 对应小程序 result.js 的解析逻辑
+            // 检查 AI 返回是否包含错误信息
+            if (aiResult.contains("\"error\"")) {
+                response.put("success", false);
+                response.put("msg", "大师陷入了沉思，请稍后再试");
+            } else {
+                response.put("success", true);
+                response.put("dreamAnalysis", aiResult);
+            }
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            System.err.println("DeepSeek 调用异常: " + e.getMessage());
+            response.put("success", false);
+            response.put("msg", "系统繁忙，解梦服务稍后回来");
+            return ResponseEntity.ok(response);
+        }
+    }
 
-            System.out.println(">>> 解梦文本生成成功");
+    /**
+     * 2、调用腾讯云混元生图接口
+     */
+    @PostMapping("/generate-image")
+    public ResponseEntity<Map<String, Object>> generateDreamImage(@RequestBody Map<String, String> request) {
+        String visualPrompt = request.get("content");
+        String originalDream = request.get("originalDream");
+        String analysisJson = request.get("analysisJson");
+
+        Map<String, Object> response = new HashMap<>();
+
+        if (visualPrompt == null || visualPrompt.isEmpty()) {
+            response.put("success", false);
+            response.put("msg", "无法提取梦境画面关键词");
+            return ResponseEntity.ok(response);
+        }
+
+        try {
+            Credential cred = new Credential(tencentSecretId, tencentSecretKey);
+            AiartClient client = new AiartClient(cred, "ap-guangzhou");
+
+            TextToImageRequest req = new TextToImageRequest();
+            req.setPrompt(visualPrompt);
+            req.setRspImgType("url");
+            req.setLogoAdd(0L);
+
+            System.out.println(">>> 正在生成梦境画面，Prompt: " + visualPrompt);
+            TextToImageResponse resp = client.TextToImage(req);
+
+            String imageUrl = resp.getResultImage();
+
+            // 关键修复：判断返回的图片链接是否为空
+            if (imageUrl == null || imageUrl.isEmpty()) {
+                response.put("success", false);
+                response.put("msg", "生成图片失败：腾讯云未返回有效链接");
+                return ResponseEntity.ok(response);
+            }
+
+            // 存入数据库
+            DreamRecord record = new DreamRecord();
+            record.setOriginalContent(originalDream);
+            record.setTitle("我的梦境解析");
+            record.setAnalysisJson(analysisJson);
+            record.setImageUrl(imageUrl);
+            dreamMapper.insert(record);
+
+            response.put("success", true);
+            response.put("imageUrl", imageUrl);
+            return ResponseEntity.ok(response);
+
+        } catch (TencentCloudSDKException e) {
+            System.err.println("腾讯云 API 异常: " + e.getErrorCode() + " - " + e.getMessage());
+            response.put("success", false);
+            if (e.getErrorCode().contains("Sensitive")) {
+                response.put("msg", "梦境画面包含敏感因素，无法绘图");
+            } else if (e.getErrorCode().contains("BalanceInsufficient")) {
+                response.put("msg", "画室资源已耗尽，请联系管理员");
+            } else {
+                response.put("msg", "生图失败: " + e.getErrorCode());
+            }
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             e.printStackTrace();
             response.put("success", false);
-            response.put("msg", "解梦失败: " + e.getMessage());
-            return ResponseEntity.status(500).body(response);
+            response.put("msg", "系统生成画面时遇到一点小麻烦");
+            return ResponseEntity.ok(response);
         }
     }
-
-
-     //2、调用腾讯云混元生图接口
-     @PostMapping("/generate-image")
-     public ResponseEntity<Map<String, Object>> generateDreamImage(@RequestBody Map<String, String> request) {
-         String visualPrompt = request.get("content"); // 这里前端传过来的是 AI 建议的视觉提示词
-         String originalDream = request.get("originalDream"); // 建议前端同时传回原始梦境描述
-         String analysisJson = request.get("analysisJson");   // 建议前端传回之前生成的 JSON 解析结果
-
-         Map<String, Object> response = new HashMap<>();
-
-         try {
-             Credential cred = new Credential(tencentSecretId, tencentSecretKey);
-             AiartClient client = new AiartClient(cred, "ap-guangzhou");
-
-             TextToImageRequest req = new TextToImageRequest();
-             // 建议：如果报错敏感，尝试简化 Prompt
-             req.setPrompt(visualPrompt);
-             req.setRspImgType("url");
-             req.setLogoAdd(0L);
-
-             TextToImageResponse resp = client.TextToImage(req);
-             String imageUrl = resp.getResultImage();
-
-             //存入数据库
-             DreamRecord record = new DreamRecord();
-             record.setOriginalContent(originalDream);
-             record.setTitle("我的梦境解析");
-             record.setAnalysisJson(analysisJson);
-             record.setImageUrl(imageUrl);
-             dreamMapper.insert(record);
-
-             response.put("success", true);
-             response.put("imageUrl", imageUrl);
-             return ResponseEntity.ok(response);
-
-         } catch (TencentCloudSDKException e) {
-             System.err.println("腾讯云报错码: " + e.getErrorCode());
-             response.put("success", false);
-             // 针对敏感词做特殊提示
-             if (e.getErrorCode().contains("Sensitive")) {
-                 response.put("msg", "梦境太深奥，画师看不懂敏感词，换个说法试试");
-             } else {
-                 response.put("msg", "生图暂时不可用: " + e.getErrorCode());
-             }
-             return ResponseEntity.ok(response); // 这里改回 ok，避免 502
-         } catch (Exception e) {
-             e.printStackTrace();
-             response.put("success", false);
-             response.put("msg", "系统繁忙");
-             return ResponseEntity.ok(response);
-         }
-     }
 
     private String callDeepSeekAI(String dreamText) throws Exception {
         RestTemplate restTemplate = new RestTemplate();
@@ -124,51 +168,54 @@ public class DreamController {
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setBearerAuth(deepseekApiKey);
 
-        // 1. 极其严格的 System Prompt，确保老师要求的字段全部包含
         String systemPrompt = "你是一位专业的心理学解梦大师。请根据用户梦境进行深度解析。\n" +
-                "输出要求：严格按照 JSON 格式回复，严禁包含任何 Markdown 标签（如 ```json）或多余解释。\n" +
-                "JSON 必须包含以下字段：\n" +
-                "1. title: 梦境名称\n" +
-                "2. abstract: 一句话摘要\n" +
-                "3. elements: 字符串数组，提取 3-5 个核心象征元素\n" +
-                "4. atmosphere: 描述梦境的情绪氛围（如：焦虑、宁静、神秘）\n" +
-                "5. interpretation: 温和的心理学深度解读\n" +
-                "6. advice: 给梦者的启发性建议\n" +
-                "7. visual_prompt: 描述梦境画面的英文关键词，用于绘图 AI\n" +
-                "8. disclaimer: 免责声明（如：本解析仅供参考，不作为医疗诊断建议）";
+                "【重要要求】：\n" +
+                "1. 严格以 JSON 格式输出，不包含 Markdown 代码块标签。\n" +
+                "2. 'elements' 字段必须是纯净的字符串数组，例如 [\"蛇\", \"森林\", \"追逐\"]，严禁包含编号（如 1.xxx）或冒号解释。\n" +
+                "3. 'visual_prompt' 必须是 3-5 个英文关键词，用逗号分隔。\n\n" +
+                "【输出模板参考】：\n" +
+                "{\n" +
+                "  \"title\": \"迷雾中的追逐\",\n" +
+                "  \"abstract\": \"一段关于自我探索与逃避的梦境。\",\n" +
+                "  \"elements\": \n" +
+                "  \"atmosphere\": \n" +
+                "  \"interpretation\": \"这里的解析内容...\",\n" +
+                "  \"advice\": \n" +
+                "  \"visual_prompt\": \n" +
+                "  \"disclaimer\": \"本建议仅供参考。\"\n" +
+                "}";
 
         List<Map<String, String>> messages = new ArrayList<>();
-        Map<String, String> systemMsg = new HashMap<>();
-        systemMsg.put("role", "system");
-        systemMsg.put("content", systemPrompt);
-        messages.add(systemMsg);
-
-        Map<String, String> userMsg = new HashMap<>();
-        userMsg.put("role", "user");
-        userMsg.put("content", "我的梦境内容是：" + dreamText);
-        messages.add(userMsg);
+        messages.add(Map.of("role", "system", "content", systemPrompt));
+        messages.add(Map.of("role", "user", "content", "我的梦境内容是：" + dreamText));
 
         Map<String, Object> payload = new HashMap<>();
         payload.put("model", "deepseek-chat");
         payload.put("messages", messages);
-        payload.put("temperature", 0.7); // 稍微降低一点随机性，确保 JSON 结构的稳定性
+        payload.put("temperature", 0.7);
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(payload, headers);
-        ResponseEntity<Map> response = restTemplate.postForEntity(DEEPSEEK_URL, entity, Map.class);
 
-        if (response.getBody() != null && response.getBody().containsKey("choices")) {
-            List choices = (List) response.getBody().get("choices");
-            Map firstChoice = (Map) choices.get(0);
-            Map messageObj = (Map) firstChoice.get("message");
-            String content = (String) messageObj.get("content");
+        try {
+            ResponseEntity<Map> response = restTemplate.postForEntity(DEEPSEEK_URL, entity, Map.class);
+            Map body = response.getBody();
 
-            // 2. 增加一层防御：自动去除 AI 可能误加的 Markdown 标签
-            if (content != null) {
-                content = content.replace("```json", "").replace("```", "").trim();
+            // 修复空指针的关键：层层判断
+            if (body != null && body.containsKey("choices")) {
+                List choices = (List) body.get("choices");
+                if (choices != null && !choices.isEmpty()) {
+                    Map firstChoice = (Map) choices.get(0);
+                    Map messageObj = (Map) firstChoice.get("message");
+                    if (messageObj != null && messageObj.containsKey("content")) {
+                        String content = (String) messageObj.get("content");
+                        return content.replaceAll("```json|```", "").trim();
+                    }
+                }
             }
-            return content; //
+        } catch (Exception e) {
+            System.err.println("请求 DeepSeek 出错: " + e.getMessage());
         }
 
-        return "{\"error\": \"大师今天有些劳累，未能感悟此梦。\"}"; // 返回 JSON 格式的错误信息
+        return "{\"error\": \"大师暂时无法看透此梦\"}";
     }
 }
