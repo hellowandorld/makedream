@@ -65,4 +65,29 @@ public class WeChatSecurityService {
         }
         return true;
     }
+
+    /**
+     * 通过微信 code 换取 openid
+     */
+    public Map<String, Object> getOpenId(String code) {
+        String url = "https://api.weixin.qq.com/sns/jscode2session?appid=" + appId
+                   + "&secret=" + appSecret
+                   + "&js_code=" + code
+                   + "&grant_type=authorization_code";
+
+        RestTemplate restTemplate = new RestTemplate();
+        try {
+            String responseStr = restTemplate.getForObject(url, String.class);
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            Map<String, Object> res = mapper.readValue(responseStr, Map.class);
+            if (res != null && res.containsKey("openid")) {
+                return res;
+            } else {
+                System.err.println("微信登录失败: " + responseStr);
+            }
+        } catch (Exception e) {
+            System.err.println("微信 jscode2session 异常: " + e.getMessage());
+        }
+        return null;
+    }
 }

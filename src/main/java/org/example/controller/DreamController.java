@@ -57,6 +57,28 @@ public class DreamController {
     private final String DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    @PostMapping("/login")
+    public ResponseEntity<Map<String, Object>> wxLogin(@RequestBody Map<String, String> request) {
+        String code = request.get("code");
+        Map<String, Object> response = new HashMap<>();
+
+        if (code == null || code.isEmpty()) {
+            response.put("success", false);
+            response.put("msg", "code 不能为空");
+            return ResponseEntity.ok(response);
+        }
+
+        Map<String, Object> wxRes = weChatSecurityService.getOpenId(code);
+        if (wxRes != null && wxRes.containsKey("openid")) {
+            response.put("success", true);
+            response.put("openid", wxRes.get("openid"));
+        } else {
+            response.put("success", false);
+            response.put("msg", "微信登录失败");
+        }
+        return ResponseEntity.ok(response);
+    }
+
     @PostMapping("/analyze")
     public ResponseEntity<Map<String, Object>> analyzeDream(@RequestBody Map<String, String> request) {
         String content = request.get("content");
@@ -133,9 +155,33 @@ public class DreamController {
             Credential cred = new Credential(tencentSecretId, tencentSecretKey);
             AiartClient client = new AiartClient(cred, "ap-guangzhou");
             TextToImageRequest req = new TextToImageRequest();
-            req.setPrompt(visualPrompt);
             req.setRspImgType("url");
             req.setLogoAdd(0L);
+
+            // 统一解析 JSON，避免重复声明 cleanJson
+            String cleanJson = analysisJson.replaceAll("(?s)```json\\s*(.*?)\\s*```", "$1").trim();
+            if (!cleanJson.startsWith("{")) {
+                cleanJson = cleanJson.substring(cleanJson.indexOf("{"));
+            }
+            JsonNode jsonNode = objectMapper.readTree(cleanJson);
+
+            // 构建增强 Prompt：优先用 image_prompt，失败回退 visualPrompt
+            String finalPrompt = visualPrompt;
+            JsonNode imgNode = jsonNode.path("image_prompt");
+            if (!imgNode.isMissingNode()) {
+                finalPrompt = String.join("，",
+                        imgNode.path("subject").asText(""),
+                        imgNode.path("scene").asText(""),
+                        imgNode.path("color").asText(""),
+                        imgNode.path("emotion").asText(""),
+                        imgNode.path("composition").asText(""),
+                        imgNode.path("art_style").asText("")
+                );
+                if (finalPrompt.trim().isEmpty()) finalPrompt = visualPrompt;
+                System.out.println(">>> 负向提示词: " + imgNode.path("negative_prompt").asText(""));
+            }
+            req.setPrompt(finalPrompt);
+            System.out.println(">>> 正在生成梦境画面，Prompt: " + finalPrompt);
 
             TextToImageResponse resp = client.TextToImage(req);
             String imageUrl = resp.getResultImage();
@@ -156,12 +202,6 @@ public class DreamController {
             record.setCreateTime(java.time.LocalDateTime.now());
 
             try {
-                String cleanJson = analysisJson.replaceAll("(?s)```json\\s*(.*?)\\s*```", "$1").trim();
-                if (!cleanJson.startsWith("{")) {
-                    cleanJson = cleanJson.substring(cleanJson.indexOf("{"));
-                }
-
-                JsonNode jsonNode = objectMapper.readTree(cleanJson);
 
                 record.setTitle(jsonNode.path("title").asText("梦境纪实"));
 
@@ -213,26 +253,49 @@ public class DreamController {
         headers.setBearerAuth(deepseekApiKey);
 
         String systemPrompt =
-                "你是一名“梦境叙事分析助手”，你的任务是基于用户描述的梦境与系统提取的特征要素，生成富有想象力、温和、启发性的梦境报告。你可以从情绪、象征、压力、关系、成长等角度进行分析。输出应具有神秘感和治愈感。\n" +
-                "【重要要求】：\n" +
-                "1. 严格以 JSON 格式输出，不要包含 Markdown 代码块标签。\n" +
-                "2. interpretation: 深度心理学分析（200字左右）\n" +
-                "3. 'elements' 字段必须是纯净的字符串数组，例如 [\"蛇\", \"森林\", \"追逐\"]。\n" +
-                "4.必须包含 'abstract' 字段，字数控制在 20 字以内，作为梦境的精炼总结。\n "+
-                "5. advice: 心理建设建议\n" +
-                "6. 'visual_prompt' 必须是 3-5 个描述画面意境的英文关键词，用逗号分隔。\n\n" +
-                "7. 请确保 'elements' 数组绝对不为空！\n"+
-                "【输出格式】：\n" +
-                "{\n" +
-                "  \"title\": \"梦境标题\",\n" +
-                "  \"abstract\": \"一句话摘要\",\n" +
-                "  \"elements\": [\"要素1\", \"要素2\"],\n" +
-                "  \"atmosphere\": \"氛围描述\",\n" +
-                "  \"interpretation\": \"深度解析内容...\",\n" +
-                "  \"advice\": \"给用户的建议\",\n" +
-                "  \"visual_prompt\": \"keyword1, keyword2, keyword3\",\n" +
-                "  \"disclaimer\": \"内容仅供娱乐参考。\"\n" +
-                "}";
+                "你是一名“梦境叙事分析助手”，你的任务是基于用户描述的梦境与系统提取的特征要素，生成富有想象力、温和、启发性的梦境报告。你可以从情绪、象征、压力、关系、成长等角度进行分析。输出应具有神秘感和治愈感。\n\n" +
+                        "【重要输出要求】：\n" +
+                        "1. 严格以 JSON 格式输出，不要包含 Markdown 代码块标签（如 ```json ）。\n" +
+                        "2. interpretation: 深度心理学分析，字数控制在 200 字左右。\n" +
+                        "3. elements: 必须是纯净的字符串数组，提取梦境核心意象，例如 [\"蛇\", \"森林\", \"追逐\"]。确保数组绝对不为空！\n" +
+                        "4. abstract: 必须包含此字段，字数在 20 字以内，作为梦境的精炼总结。\n" +
+                        "5. advice: 给用户的心理建设建议。\n" +
+                        "6. visual_prompt: 提供 3-5 个描述画面意境的英文关键词，用逗号分隔。\n\n" +
+
+                        "【视觉增强要求（image_prompt）】：\n" +
+                        "必须包含一个名为 'image_prompt' 的对象，用于指导 AI 绘图，包含以下字段：\n" +
+                        " - subject: 根据梦境提取的主视觉主体（中文描述）。\n" +
+                        " - scene: 根据梦境描述的场景与环境（中文描述）。\n" +
+                        " - color: 根据梦境氛围提取的主色调关键词。\n" +
+                        " - emotion: 梦境传达的核心情绪关键词。\n" +
+                        " - composition: 构图建议（如：仰视/俯视/特写/全景等）。\n" +
+                        " - art_style: 艺术风格（如：超现实主义/吉卜力/水墨/暗黑等）。\n" +
+                        " - negative_prompt: 需要避免的元素（如：血腥、恐怖、低分辨率）。\n\n" +
+
+                        "【重要注意事项】：\n" +
+                        "1. image_prompt 中的每个字段必须根据本次梦境内真实填写，严禁照搬示例文字。\n" +
+                        "2. subject 和 scene 用中文描述，其余字段可使用中英文混合的关键词。\n\n" +
+
+                        "【输出 JSON 格式示例】：\n" +
+                        "{\n" +
+                        "  \"title\": \"梦境标题\",\n" +
+                        "  \"abstract\": \"一句话摘要\",\n" +
+                        "  \"elements\": [\"要素1\", \"要素2\"],\n" +
+                        "  \"atmosphere\": \"氛围描述\",\n" +
+                        "  \"interpretation\": \"深度解析内容...\",\n" +
+                        "  \"advice\": \"给用户的建议\",\n" +
+                        "  \"visual_prompt\": \"keyword1, keyword2, keyword3\",\n" +
+                        "  \"image_prompt\": {\n" +
+                        "    \"subject\": \"主体内容\",\n" +
+                        "    \"scene\": \"环境场景\",\n" +
+                        "    \"color\": \"色调\",\n" +
+                        "    \"emotion\": \"情绪\",\n" +
+                        "    \"composition\": \"构图\",\n" +
+                        "    \"art_style\": \"风格\",\n" +
+                        "    \"negative_prompt\": \"屏蔽词\"\n" +
+                        "  },\n" +
+                        "  \"disclaimer\": \"内容仅供娱乐参考。\"\n" +
+                        "}";
 
         List<Map<String, String>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", systemPrompt));
