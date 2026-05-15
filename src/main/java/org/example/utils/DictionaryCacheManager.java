@@ -25,9 +25,7 @@ public class DictionaryCacheManager implements CommandLineRunner {
         loadDictionary();
     }
 
-    /**
-     * 加载/刷新词典缓存
-     */
+     //加载/刷新词典缓存
     public synchronized void loadDictionary() {
         dictionaryCache.clear();
         List<Map<String, Object>> activeItems = dreamDictionaryMapper.selectAllActive();
@@ -35,17 +33,12 @@ public class DictionaryCacheManager implements CommandLineRunner {
         System.out.println(">>> 梦境字典缓存加载完毕，当前词条总数: " + dictionaryCache.size());
     }
 
-    /**
-     * 获取全局词典缓存 (原始 List 结构)
-     */
+
+     //获取全局词典缓存 (原始 List 结构)
     public static List<Map<String, Object>> getDictionaryCache() {
         return dictionaryCache;
     }
 
-    /**
-     * 新增：获取 Map 格式的缓存供提取器使用
-     * 将 List<Map<String, Object>> 转换为 Map<String, List<String>>
-     */
     public static Map<String, List<String>> getCache() {
         Map<String, List<String>> resultMap = new HashMap<>();
 

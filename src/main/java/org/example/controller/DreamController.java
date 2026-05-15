@@ -202,7 +202,6 @@ public class DreamController {
             record.setCreateTime(java.time.LocalDateTime.now());
 
             try {
-
                 record.setTitle(jsonNode.path("title").asText("梦境纪实"));
 
                 if (jsonNode.has("abstract") && !jsonNode.get("abstract").asText().isEmpty()) {

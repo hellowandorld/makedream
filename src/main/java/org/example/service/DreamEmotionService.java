@@ -48,13 +48,8 @@ public class DreamEmotionService {
         }
     }
 
-    /**
-     * 计算各类情绪得分（TF × IDF × Weight）
-     *
-     * @param dreamText  梦境文本
-     * @param dictionary 包含关键词和权重的字典列表
-     * @return 各类情绪得分 Map
-     */
+
+     //计算各类情绪得分（TF × IDF × Weight）
     public Map<String, Integer> calculateEmotionScores(String dreamText, List<Map<String, Object>> dictionary) {
         Map<String, Integer> scores = new HashMap<>();
         String[] emotionTypes = {"焦虑型", "恐惧型", "孤独型", "压抑型", "治愈型", "愉悦型", "混合型"};
@@ -77,7 +72,6 @@ public class DreamEmotionService {
                 scores.merge(emotionType, (int) Math.round(rawScore), Integer::sum);
             }
         }
-
         return scores;
     }
 

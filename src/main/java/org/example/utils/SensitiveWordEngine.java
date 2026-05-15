@@ -73,9 +73,8 @@ public class SensitiveWordEngine {
         }
     }
 
-    /**
-     * 判断文字是否包含敏感词
-     */
+
+    //判断文字是否包含敏感词
     public boolean containsSensitiveWord(String txt) {
         for (int i = 0; i < txt.length(); i++) {
             int matchFlag = checkSensitiveWord(txt, i);
@@ -86,9 +85,7 @@ public class SensitiveWordEngine {
         return false;
     }
 
-    /**
-     * 检查文字中是否包含敏感词及其长度
-     */
+    //检查文字中是否包含敏感词及其长度
     private int checkSensitiveWord(String txt, int beginIndex) {
         boolean flag = false;
         int matchFlag = 0;

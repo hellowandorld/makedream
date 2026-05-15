@@ -66,9 +66,8 @@ public class WeChatSecurityService {
         return true;
     }
 
-    /**
-     * 通过微信 code 换取 openid
-     */
+
+     //通过微信 code 换取 openid
     public Map<String, Object> getOpenId(String code) {
         String url = "https://api.weixin.qq.com/sns/jscode2session?appid=" + appId
                    + "&secret=" + appSecret

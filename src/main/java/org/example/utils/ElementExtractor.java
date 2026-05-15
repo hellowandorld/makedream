@@ -7,12 +7,8 @@ import java.util.Map;
 
 public class ElementExtractor {
 
-    /**
-     * 提取梦境内容中的要素
-     *
-     * @param text 梦境内容文本
-     * @return 提取出的要素 Map，键为分类，值为匹配到的关键词（用逗号分隔）
-     */
+     //提取梦境内容中的要素
+
     public static Map<String, String> extract(String text) {
         Map<String, String> resultMap = new HashMap<>();
 
